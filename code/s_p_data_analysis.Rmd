@@ -1,0 +1,175 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-03-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(readr)
+library(sf)
+library(dplyr)
+library(skimr)
+library(cowplot)
+```
+
+
+
+```{r help data}
+
+site1 <- st_read('./data/mining_site1.shp')
+
+
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+mongolia <- ne_countries(country = "Mongolia", scale = "medium", returnclass = "sf")
+mongolia_wgs <- st_transform(mongolia, 4326)   # ensure WGS84 for leaflet
+
+```
+
+
+  The data is very large and may take a while
+  
+```{r eval=FALSE, include=FALSE}
+
+dir.sp <- ".data/raw/S_and_P"
+
+f <- file.path(dir.sp, 'Preprocessed S&P data', 'companies.csv')
+sp_com <- readr::read_csv(file = f, show_col_types = F)
+
+f <- file.path(dir.sp, 'Preprocessed S&P data', 'msci_acwi_assets.csv')
+sp_processed <- readr::read_csv(file = f, show_col_types = F)
+
+```
+
+```{r skim data, eval=FALSE, include=FALSE}
+
+skim(sp_processed)
+```
+
+
+```{r filter, eval=FALSE, include=FALSE}
+
+
+# unique(sp_processed$country) %>% sort()
+
+sp_dat_mng <- sp_processed %>%
+  filter(country %in% c("Mongolia", "MONGOLIA"))
+
+# names(sp_dat_mng)
+
+
+library(sf)
+
+mining_sf <- sp_dat_mng %>%
+  select(-geometry) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = F)   # WGS84
+
+f <- "./data/s_and_p_mining_sites_Mongolia.gpkg"
+st_write(mining_sf, f, layer = "mining_sites", delete_layer = TRUE)
+```
+
+
+```{r map}
+
+library(leaflet)
+
+## reload data
+f <- "./data/s_and_p_mining_sites_Mongolia.gpkg"
+pt.plant <- st_read(f)
+
+```
+
+
+```{r map}
+# ---------------------------
+# If starting from a data frame with lon/lat columns
+# ---------------------------
+leaflet() %>%
+  # addProviderTiles(providers$CartoDB.Positron) %>%    # clean basemap
+  # addProviderTiles(providers$Esri.WorldTopoMap) %>%    # clean basemap
+  addProviderTiles(providers$Esri.WorldImagery) %>%       # satellite
+  addProviderTiles(providers$CartoDB.PositronNoLabels,    # road labels on top
+                   options = providerTileOptions(opacity = 0.3)) %>%
+  
+  addPolygons(
+    data        = mongolia_wgs,
+    fill        = FALSE,
+    color       = "white",
+    weight      = 2,
+    opacity     = 0.8
+  ) %>%
+  
+  addPolygons(
+    data        = site1,
+    fill        = FALSE,
+    color       = "yellow",
+    weight      = 5,
+    opacity     = 0.8
+  ) %>%
+  
+  addCircleMarkers(
+    data   = pt.plant,
+    lng    = ~longitude,
+    lat    = ~latitude,
+    radius = 4,
+    color  = "red",
+    stroke = TRUE,
+    fillOpacity = 0.5,
+    popup  = ~paste0(
+      "<b>Name:</b> ", asset_name, "<br>",
+      "<b>Category:</b> ", facility_category, "<br>",
+      "<b>waterstress_moderate_2030:</b> ",  round(waterstress_moderate_2030, 1), "<br>",
+      "<b>waterstress_moderate_2050:</b> ",  round(waterstress_moderate_2050, 1)
+    ),
+    label = ~asset_name,           # hover tooltip
+    labelOptions = labelOptions(
+      style     = list("font-weight" = "bold", padding = "4px 8px"),
+      direction = "auto"
+    )
+  ) %>%
+  addScaleBar(position = "bottomleft") %>%
+  addMiniMap(toggleDisplay = TRUE, position = "bottomleft")  # inset overview map
+
+# ---------------------------
+# If starting from an sf object (auto-extracts coords)
+# ---------------------------
+# leaflet(pt.plant) %>%
+#   addProviderTiles(providers$CartoDB.Positron) %>%
+#   addCircleMarkers(
+#     radius      = 4,
+#     color       = "#2ecc71",
+#     stroke      = FALSE,
+#     fillOpacity = 0.7,
+#     popup       = ~paste0("<b>Rank:</b> ", rank)
+#   )
+
+
+# ---------------------------
+# Richer version: colour by a variable (e.g. rank)
+# ---------------------------
+# pal <- colorNumeric(palette = "YlOrRd", domain = pt.plant$rank)
+# 
+# leaflet(pt.plant) %>%
+#   addProviderTiles(providers$CartoDB.Positron) %>%
+#   addCircleMarkers(
+#     lng         = ~lon,
+#     lat         = ~lat,
+#     radius      = 5,
+#     color       = ~pal(rank),
+#     stroke      = FALSE,
+#     fillOpacity = 0.8,
+#     popup       = ~paste0("<b>Rank:</b> ", rank)
+#   ) %>%
+#   addLegend(
+#     position = "bottomright",
+#     pal      = pal,
+#     values   = ~rank,
+#     title    = "Planting Priority"
+#   ) %>%
+#   addScaleBar(position = "bottomleft")
+```
+
