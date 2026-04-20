@@ -1,0 +1,936 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-04-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Packages
+
+```{r echo=FALSE}
+# ============================================================
+# FIG 01 – Mean ES Values at Mining Sites (Faceted Bar)
+# Each ES service gets its own panel with a free y-axis scale
+# ============================================================
+# Dependencies:
+# install.packages(c("tidyverse", "sf", "scales", "ggtext", "patchwork"))
+# ============================================================
+
+library(tidyverse)
+library(sf)
+library(scales)
+library(ggtext)   # rich text in titles/labels
+
+ymd   <- format(Sys.time(), "%Y%m%d"); ymd
+
+# ============================================================
+# USER INPUTS
+# ============================================================
+
+BASE_DIR <- r"(C:\Users\yingjiel\Documents\mongolia-mining)"
+
+# Output figure path
+FIG_DIR <- file.path(BASE_DIR, 'figures', "es_footprint_figures")
+dir.create(FIG_DIR, showWarnings = FALSE, recursive = TRUE)
+OUT_FIG <- file.path(FIG_DIR, "fig01_mean_bar_facet.png")
+```
+
+
+```{r}
+
+# GeoPackage outputs from es_footprint_analysis.py
+DATASETS <- list(
+  # "Tang2023" = file.path(BASE_DIR, 'data', "es_footprint_outputs", "es_footprint_Tang2023.gpkg"),
+  "Maus2022" = file.path(BASE_DIR, 'data', "es_footprint_outputs", "es_footprint_Maus2022.gpkg")
+)
+
+# Ecosystem service IDs (must match the es_id column in your ES table)
+ES_IDS <- c(
+  # "coastal_risk_reduction_service",
+  "nitrogen_retention_service",
+  "sediment_retention_service",
+  "nature_access_service",
+  "water_consumption" 
+)
+
+# Display labels for facet titles and axes
+ES_LABELS <- c(
+  # "coastal_risk_reduction_service" = "Coastal Risk Reduction",
+  "nitrogen_retention_service"     = "Nitrogen Retention",
+  "sediment_retention_service"     = "Sediment Retention",
+  "nature_access_service"          = "Nature Access",
+  "water_consumption"              = "Water Consumption"
+)
+
+# Dataset display labels
+DS_LABELS <- c(
+  # "Tang2023" = "Tang et al. 2023",
+  "Maus2022" = "Maus et al. 2022"
+)
+
+
+```
+
+
+
+## Load data
+
+```{r}
+# ============================================================
+# LOAD & RESHAPE DATA
+# ============================================================
+
+load_col <- function(gpkg_path, 
+                     dataset_label, 
+                     column_postfix = '_mean' # or '_sum'
+                       ) { 
+  if (!file.exists(gpkg_path)) {
+    message("  ✗ File not found, skipping: ", gpkg_path)
+    return(NULL)
+  }
+
+  gdf <- st_read(gpkg_path, quiet = TRUE) |>
+    st_drop_geometry()   # we only need the attribute table
+
+  # pull out {es_id}_mean columns and pivot to long form
+  selected_cols <- paste0(ES_IDS, column_postfix)
+  available <- intersect(selected_cols, colnames(gdf))
+
+  if (length(available) == 0) {
+    message("  ✗ No ", column_postfix, " columns found in ", dataset_label)
+    return(NULL)
+  }
+
+  gdf |>
+    select(all_of(available)) |>
+    pivot_longer(
+      cols      = everything(),
+      names_to  = "es_id",
+      values_to = "value"
+    ) |>
+    mutate(
+      es_id   = str_remove(es_id, paste0(column_postfix, "$")),
+      dataset = dataset_label,
+      metric = str_remove(column_postfix, "^_")
+    )
+}
+
+
+
+library(purrr)
+
+df_mean_list <- imap(DATASETS, ~ load_col(gpkg_path = .x,
+                                          dataset_label = .y,
+                                          column_postfix = "_mean"))
+
+df_sum_list <- imap(DATASETS, ~ load_col(gpkg_path = .x,
+                                         dataset_label = .y,
+                                         column_postfix = "_sum"))
+
+df_idx_list <- imap(DATASETS, ~ load_col(gpkg_path = .x,
+                                         dataset_label = .y,
+                                         column_postfix = "_adj_sum"))
+
+df_mean <- list_rbind(df_mean_list)
+df_sum  <- list_rbind(df_sum_list)
+df_idx  <- list_rbind(df_idx_list)
+
+```
+
+
+
+
+```{r load water consumption}
+
+## reload data
+f <- file.path(BASE_DIR, "data", "water_consumption_cas.gpkg")
+df_wat <- st_read(f)
+
+
+names(df_wat)
+names(df_sum)
+
+df_wat_sum <- df_wat %>%
+  st_drop_geometry() %>%
+  mutate(
+    es_id = 'water_consumption',
+    value = annual_water_consumption_mm3 * 10^6, 
+    dataset = 'CAS', 
+    metric = 'sum'
+  ) %>%
+  select(es_id, value, dataset, metric)
+
+```
+
+
+
+```{r combine data}
+
+df_sum_comb <- rbind(df_sum, df_wat_sum)
+
+```
+
+
+
+
+```{r clean label}
+
+
+# attach display labels
+df_mean_all <- df_mean |>
+  mutate(
+    es_label = ES_LABELS[es_id],
+    ds_label = DS_LABELS[dataset],
+    # keep factor order consistent with ES_IDS
+    es_label = factor(es_label, levels = ES_LABELS[ES_IDS]),
+    ds_label = factor(ds_label, levels = DS_LABELS)
+  )
+
+
+df_sum_all <- df_sum_comb |>
+  filter(value > 0) %>%
+  mutate(
+    es_label = ES_LABELS[es_id],
+    ds_label = DS_LABELS[dataset],
+    # keep factor order consistent with ES_IDS
+    es_label = factor(es_label, levels = ES_LABELS[ES_IDS]),
+    ds_label = factor(ds_label, levels = DS_LABELS)
+  ) %>%
+  group_by(es_id) %>%
+  mutate(total_sum = sum(value)) %>%
+  filter(!es_id %in% c('nature_access_service')) %>%
+  ungroup()
+
+
+df_sum_label <- df_sum_all %>%
+  group_by(es_id, es_label) %>%
+  summarise(total_sum = sum(value), .groups = "drop")
+
+
+```
+
+
+
+```{r plot - sum}
+
+library(scales)
+
+n_services <- unique(df_sum_all$es_id) %>% length()
+n_cols <- 2
+n_rows <- floor(n_services/n_cols); n_rows
+
+df_sum_all %>%
+  as.data.frame() %>%
+  ggplot(aes(x = value)) + 
+  geom_histogram(bins = 30, fill = "#fe9929", color = "white") +
+  # scale_y_log10(labels = scales::math_format(10^.x) ) +
+  # scale_x_log10(labels = scales::math_format(10^.x) ) +
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                labels = trans_format("log10", math_format(10^.x))) +
+  # scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+  #               labels = trans_format("log10", math_format(10^.x))) +
+  # annotation_logticks()  + 
+  facet_wrap(~ es_label, scales = "free") +
+  
+  
+  # add total sum text
+  geom_text(
+    data = df_sum_label,
+    aes(
+      x = Inf, 
+      y = Inf, 
+      # label = paste0("Total = ", scales::comma(total_sum)),
+      label = paste0("Total = ", scales::label_number(
+        scale_cut = scales::cut_short_scale(), 
+        accuracy = 0.1
+        )(total_sum))
+    ),
+    hjust = 1.1, # 1.1
+    vjust = 1.5,
+    size = 3.5, 
+    fontface="italic",
+    inherit.aes = FALSE
+  ) +
+    
+    
+  labs(
+    x = "Total",
+    y = "Count",
+    # title = "Distribution of Sum Values"
+  ) +
+  theme_bw(base_size = 12)
+
+
+out_c <- file.path(FIG_DIR, paste0("figA_es_sum_hist_", ymd, ".png"))
+ggsave(out_c, plot = last_plot(), width = 7, height = 2*n_rows, dpi = 600, bg = "transparent")
+```
+
+
+
+
+## Stats + Plot 
+
+```{r}
+# ============================================================
+# SUMMARY STATS (mean ± se per ES × dataset)
+# ============================================================
+
+df_summary <- df_mean_all |>
+  group_by(es_label, ds_label) |>
+  summarise(
+    mean_val = mean(value,  na.rm = TRUE),
+    se       = sd(value,   na.rm = TRUE) / sqrt(sum(!is.na(value))),
+    n        = sum(!is.na(value)),
+    .groups  = "drop"
+  )
+
+message("Summary stats computed for ", nrow(df_summary), " ES × dataset combinations")
+
+
+# ============================================================
+# PLOT
+# ============================================================
+
+# dataset colours
+ds_colours <- c(
+  # "Tang et al. 2023" = "#1f77b4",
+  "Maus et al. 2022" = "#ff7f0e"
+)
+# fall back gracefully if only one dataset is present
+ds_colours <- ds_colours[names(ds_colours) %in% levels(df_summary$ds_label)]
+
+p <- ggplot(df_summary,
+            aes(x     = ds_label,
+                y     = mean_val,
+                fill  = ds_label,
+                label = number(mean_val, accuracy = 0.01, big.mark = ","))) +
+
+  # bars
+  geom_col(width = 0.6, colour = "white", linewidth = 0.3) +
+
+  # error bars (± 1 SE)
+  geom_errorbar(aes(ymin = mean_val - se,
+                    ymax = mean_val + se),
+                width = 0.18, linewidth = 0.6, colour = "grey30") +
+
+  # value labels above bars
+  geom_text(aes(y = mean_val + se),
+            vjust = -0.5, size = 3, colour = "grey20") +
+
+  # one panel per ES, each with its own y scale
+  facet_wrap(~ es_label,
+             scales = "free_y",
+             ncol   = 2) +
+
+  scale_fill_manual(values = ds_colours, name = NULL) +
+
+  scale_y_continuous(
+    labels = label_number(big.mark = ",", accuracy = 0.01),
+    expand = expansion(mult = c(0, 0.18))   # headroom above bars for labels
+  ) +
+
+  labs(
+    title    = "Mean Ecosystem Service Values at Mining Sites",
+    subtitle = "Error bars = ±1 SE across polygons  |  y-axis free per panel",
+    x        = NULL,
+    y        = "Mean Value",
+    caption  = "Sources: Tang et al. 2023; Maus et al. 2022"
+  ) +
+
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 14),
+    plot.subtitle    = element_text(colour = "grey40", size = 10),
+    plot.caption     = element_text(colour = "grey50", size = 9, hjust = 1),
+    strip.text       = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "#f0f0f0", colour = NA),
+    axis.text.x      = element_text(size = 10),
+    axis.title.y     = element_text(size = 10),
+    legend.position  = "bottom",
+    legend.key.size  = unit(0.4, "cm"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank()
+  )
+
+
+# ============================================================
+# SAVE
+# ============================================================
+
+ggsave(
+  filename = OUT_FIG,
+  plot     = p,
+  width    = 10,
+  height   = 8,
+  dpi      = 300,
+  bg       = "white"
+)
+
+message("✓ Figure saved: ", OUT_FIG)
+print(p)
+
+
+```
+
+
+## Map 
+```{r}
+# ============================================================
+# SPATIAL POINT MAPS – ES Mean & Adj-Sum at Mining Sites
+# ============================================================
+# Converts mining polygons to centroids so each site appears
+# as a single point regardless of polygon size.
+# Produces two figure sets:
+#   Fig A – Mean value maps  (one facet per ES service)
+#   Fig B – Adj-sum maps     (one facet per ES service)
+#   Fig C – Combined 2-row dashboard (mean | adj-sum)
+#
+# Dependencies:
+#   install.packages(c("tidyverse", "sf", "scales",
+#                      "ggspatial", "rnaturalearth",
+#                      "rnaturalearthdata", "patchwork"))
+# ============================================================
+
+library(tidyverse)
+library(sf)
+library(scales)
+library(ggspatial)          # north arrow + scale bar
+library(rnaturalearth)      # country basemap
+library(rnaturalearthdata)  # required by rnaturalearth
+library(patchwork)          # stitch panels together
+
+# ============================================================
+# USER INPUTS
+# ============================================================
+
+
+
+# Point appearance
+POINT_SIZE   <- 1.8    # base point size
+POINT_ALPHA  <- 0.85   # transparency
+POINT_STROKE <- 0.1    # outline thickness
+
+# Colour palettes – one per stat type
+PALETTE_MEAN <- "YlOrRd"   # sequential: low → high mean value
+PALETTE_SUM  <- "PuBuGn"   # sequential: low → high adj-sum
+
+# Basemap country fill / border
+COUNTRY_FILL   <- "#f5f5f0"
+COUNTRY_BORDER <- "#c8c8c8"
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+#' Load a gpkg, drop geometry, reproject to WGS84, return centroid sf
+load_centroids <- function(gpkg_path, dataset_label) {
+  if (!file.exists(gpkg_path)) {
+    stop("File not found: ", gpkg_path)
+  }
+  message("  Loading: ", gpkg_path)
+
+  gdf <- st_read(gpkg_path, quiet = TRUE) |>
+    st_make_valid() |>
+    st_transform(4326)   # ensure WGS84 for plotting
+
+  # centroid of each polygon
+  centroids <- gdf |>
+    mutate(geometry = st_centroid(st_geometry(gdf))) |>
+    mutate(dataset = dataset_label)
+
+  message("  ✓ ", nrow(centroids), " centroids  |  CRS: EPSG:4326")
+  centroids
+}
+
+
+#' Pivot one stat (mean or adj_sum) to long form, attach ES labels
+pivot_stat <- function(sf_obj, stat_suffix) {
+  cols    <- paste0(ES_IDS, stat_suffix)
+  present <- intersect(cols, colnames(sf_obj))
+
+  if (length(present) == 0) {
+    stop("No columns matching *", stat_suffix, " found.")
+  }
+
+  sf_obj |>
+    select(dataset, all_of(present), geometry) |>
+    pivot_longer(
+      cols      = all_of(present),
+      names_to  = "es_id",
+      values_to = "value"
+    ) |>
+    mutate(
+      es_id    = str_remove(es_id, paste0(stat_suffix, "$")),
+      es_label = factor(ES_LABELS[es_id], levels = ES_LABELS[ES_IDS])
+    )
+}
+
+
+#' Winsorise to [p_low, p_high] quantiles to reduce outlier distortion
+winsorise <- function(x, p_low = 0.02, p_high = 0.98) {
+  qs <- quantile(x, c(p_low, p_high), na.rm = TRUE)
+  pmax(pmin(x, qs[2]), qs[1])
+}
+
+
+#' World basemap cropped to the bounding box of an sf object (+buffer_deg)
+basemap <- function(sf_obj, buffer_deg = 0.5) {
+  bb <- st_bbox(sf_obj)
+  world <- ne_countries(scale = "medium", returnclass = "sf")
+  st_crop(world,
+          xmin = as.numeric(bb["xmin"]) - buffer_deg,
+          xmax = as.numeric(bb["xmax"]) + buffer_deg,
+          ymin = as.numeric(bb["ymin"]) - buffer_deg,
+          ymax = as.numeric(bb["ymax"]) + buffer_deg)
+}
+
+
+#' Build one faceted point map
+#'   long_sf  : long-form sf with columns value, es_label, geometry
+#'   stat_label: "Mean Value" or "Area-Adjusted Sum"
+#'   palette   : viridis/brewer palette name
+#'   ds_label  : dataset display string
+make_facet_map <- function(long_sf, stat_label, palette, ds_label) {
+
+  # winsorise per ES panel to avoid a single outlier swamping the scale
+  long_sf <- long_sf |>
+    group_by(es_label) |>
+    mutate(value_w = winsorise(value)) |>
+    ungroup()
+
+  world_crop <- basemap(long_sf, buffer_deg = 1.5)
+
+  ggplot() +
+
+    # ── basemap ──────────────────────────────────────────────────────────────
+    geom_sf(data  = world_crop,
+            fill  = COUNTRY_FILL,
+            color = COUNTRY_BORDER,
+            linewidth = 0.25) +
+
+    # ── mining-site points ────────────────────────────────────────────────────
+    geom_sf(data  = long_sf,
+            aes(colour = value_w),
+            size   = POINT_SIZE,
+            alpha  = POINT_ALPHA,
+            stroke = POINT_STROKE,
+            shape  = 16) +
+
+    # ── colour scale (continuous, winsorised) ─────────────────────────────────
+    scale_colour_distiller(
+      palette  = palette,
+      direction = 1,
+      name     = stat_label,
+      labels   = label_number(big.mark = ",", accuracy = 0.01),
+      guide    = guide_colourbar(
+        title.position = "top",
+        title.hjust    = 0.5,
+        barwidth       = unit(6, "cm"),
+        barheight      = unit(0.4, "cm"),
+        ticks.linewidth = 0.5
+      )
+    ) +
+
+    # ── one panel per ES, each with own colour scale ──────────────────────────
+    facet_wrap(~ es_label, ncol = 2) + # , scales = "free"
+
+    # ── cartographic extras ───────────────────────────────────────────────────
+    annotation_scale(location = "bl", width_hint = 0.25,
+                     text_cex = 0.6, line_width = 0.5) +
+    annotation_north_arrow(location = "tr",
+                           style    = north_arrow_minimal(text_size = 7),
+                           height   = unit(0.6, "cm"),
+                           width    = unit(0.6, "cm")) +
+
+    coord_sf(expand = FALSE) +
+
+    labs(
+      title    = paste0(stat_label, " of Ecosystem Services at Mining Sites"),
+      subtitle = paste0(ds_label,
+                        "  |  Points = polygon centroids  |  ",
+                        "Colour winsorised to 2nd–98th percentile per panel"),
+      caption  = "Basemap: Natural Earth  |  CRS: WGS84"
+    ) +
+
+    theme_bw(base_size = 11) +
+    theme(
+      plot.title        = element_text(face = "bold", size = 13),
+      plot.subtitle     = element_text(colour = "grey40", size = 9),
+      plot.caption      = element_text(colour = "grey55", size = 8, hjust = 1),
+      strip.text        = element_text(face = "bold", size = 10),
+      strip.background  = element_rect(fill = "#eeeeee", colour = NA),
+      legend.position   = "bottom",
+      legend.title      = element_text(size = 9, face = "bold"),
+      legend.text       = element_text(size = 8),
+      axis.text         = element_text(size = 7),
+      axis.title        = element_blank(),
+      panel.grid.major  = element_line(colour = "#e8e8e8", linewidth = 0.3),
+      panel.spacing     = unit(0.6, "lines")
+    )
+}
+
+
+#' Build a 2-row combined dashboard (mean top, adj_sum bottom)
+#'   for a single dataset
+make_dashboard <- function(long_mean, long_sum, ds_label) {
+  p_mean <- make_facet_map(long_mean, "Mean Value",
+                           PALETTE_MEAN, ds_label) +
+    theme(plot.title    = element_blank(),
+          plot.subtitle = element_blank(),
+          plot.caption  = element_blank())
+
+  p_sum  <- make_facet_map(long_sum,  "Area-Adjusted Sum",
+                           PALETTE_SUM,  ds_label) +
+    theme(plot.title    = element_blank(),
+          plot.subtitle = element_blank())
+
+  p_mean / p_sum +
+    plot_annotation(
+      title    = paste0("Ecosystem Services at Mining Sites – ", ds_label),
+      subtitle = "Top: Mean value per polygon centroid  |  Bottom: Area-adjusted sum",
+      caption  = "Basemap: Natural Earth  |  Points = polygon centroids  |  CRS: WGS84",
+      theme    = theme(
+        plot.title    = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(colour = "grey40", size = 10),
+        plot.caption  = element_text(colour = "grey55", size = 8, hjust = 1)
+      )
+    )
+}
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+message("\n", strrep("=", 65))
+message("SPATIAL POINT MAPS – ES MEAN & ADJ-SUM")
+message(strrep("=", 65), "\n")
+
+for (label in names(DATASETS)) {
+  message("── Dataset: ", label, " ──────────────────────────────────")
+
+  centroids <- tryCatch(
+    load_centroids(DATASETS[[label]], label),
+    error = function(e) { message("  ✗ ", e$message); NULL }
+  )
+  if (is.null(centroids)) next
+
+  ds_label   <- DS_LABELS[label]
+  long_mean  <- pivot_stat(centroids, "_mean")
+  long_sum   <- pivot_stat(centroids, "_adj_sum")
+
+  # ── Fig A: mean facet map ──────────────────────────────────────────────────
+  message("  Plotting Fig A – Mean value map...")
+  p_a <- make_facet_map(long_mean, "Mean Value", PALETTE_MEAN, ds_label)
+  out_a <- file.path(FIG_DIR, paste0("figA_spatial_mean_", label, ".png"))
+  ggsave(out_a, p_a, width = 12, height = 10, dpi = 300, bg = "white")
+  message("  ✓ Saved: ", basename(out_a))
+
+  # ── Fig B: adj-sum facet map ───────────────────────────────────────────────
+  message("  Plotting Fig B – Adj-sum map...")
+  p_b <- make_facet_map(long_sum, "Area-Adjusted Sum", PALETTE_SUM, ds_label)
+  out_b <- file.path(FIG_DIR, paste0("figB_spatial_adjsum_", label, ".png"))
+  ggsave(out_b, p_b, width = 12, height = 10, dpi = 300, bg = "white")
+  message("  ✓ Saved: ", basename(out_b))
+
+  # ── Fig C: combined dashboard ─────────────────────────────────────────────
+  message("  Plotting Fig C – Combined dashboard...")
+  p_c <- make_dashboard(long_mean, long_sum, ds_label)
+  out_c <- file.path(FIG_DIR, paste0("figC_spatial_dashboard_", label, ".png"))
+  ggsave(out_c, p_c, width = 12, height = 18, dpi = 300, bg = "white")
+  message("  ✓ Saved: ", basename(out_c))
+
+  message("")
+}
+
+message(strrep("=", 65))
+message("✓ All figures saved to: ", FIG_DIR)
+message(strrep("=", 65))
+
+```
+
+## Map - point size
+
+```{r}
+
+# ── Bubble size range (ggplot units) ──────────────────────────────────────────
+# Increase MAX_BUBBLE if sites are sparse; decrease if they overlap too much
+MIN_BUBBLE <- 0.5
+MAX_BUBBLE <- 6
+
+# ── Point transparency ────────────────────────────────────────────────────────
+POINT_ALPHA <- 0.75
+
+# ── Colour palette for polygon AREA (the 2nd variable) ───────────────────────
+# Uses a diverging-ish sequential palette so small vs large mines stand out
+AREA_PALETTE   <- "Blues"    # darker = larger mine polygon
+AREA_PALETTE_D <- 1          # direction: 1 = light→dark with increasing value
+
+# ── Basemap ───────────────────────────────────────────────────────────────────
+COUNTRY_FILL   <- "#f0ede8"
+COUNTRY_BORDER <- "#c0bbb4"
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+#' Load gpkg → validate → reproject → compute centroids + polygon area (km²)
+load_centroids <- function(gpkg_path, dataset_label) {
+  if (!file.exists(gpkg_path)) stop("File not found: ", gpkg_path)
+  message("  Loading: ", gpkg_path)
+
+  gdf <- st_read(gpkg_path, quiet = TRUE) |>
+    st_make_valid() |>
+    st_transform(4326)
+
+  # area in km² (reproject to equal-area for accurate measurement)
+  area_m2 <- gdf |>
+    st_transform(6933) |>   # WGS 84 / NSIDC EASE-Grid 2.0 (equal-area)
+    st_area() |>
+    as.numeric()
+
+  centroids <- gdf |>
+    mutate(
+      polygon_area_km2 = area_m2 / 1e6,
+      geometry         = st_centroid(st_geometry(gdf)),
+      dataset          = dataset_label
+    )
+
+  message("  ✓ ", nrow(centroids), " centroids  |  ",
+          "area range: ", round(min(area_m2 / 1e6), 2), "–",
+          round(max(area_m2 / 1e6), 1), " km²")
+  centroids
+}
+
+
+#' Pivot one stat suffix (_mean or _adj_sum) to long form
+#' Carries polygon_area_km2 along for colour encoding
+pivot_stat <- function(sf_obj, stat_suffix) {
+  cols    <- paste0(ES_IDS, stat_suffix)
+  present <- intersect(cols, colnames(sf_obj))
+  if (length(present) == 0) stop("No columns matching *", stat_suffix)
+
+  sf_obj |>
+    select(dataset, polygon_area_km2, all_of(present), geometry) |>
+    pivot_longer(
+      cols      = all_of(present),
+      names_to  = "es_id",
+      values_to = "value"
+    ) |>
+    mutate(
+      es_id    = str_remove(es_id, paste0(stat_suffix, "$")),
+      es_label = factor(ES_LABELS[es_id], levels = ES_LABELS[ES_IDS])
+    )
+}
+
+
+#' Winsorise to [p_low, p_high] — applied per ES panel
+winsorise <- function(x, p_low = 0.02, p_high = 0.98) {
+  qs <- quantile(x, c(p_low, p_high), na.rm = TRUE)
+  pmax(pmin(x, qs[2]), qs[1])
+}
+
+
+#' Crop world basemap to sf bounding box + buffer
+basemap_crop <- function(sf_obj, buffer_deg = 1.5) {
+  bb    <- st_bbox(sf_obj)
+  world <- ne_countries(scale = "medium", returnclass = "sf")
+  st_crop(world,
+          xmin = as.numeric(bb["xmin"]) - buffer_deg, xmax = as.numeric(bb["xmax"]) + buffer_deg,
+          ymin = as.numeric(bb["ymin"]) - buffer_deg, ymax = as.numeric(bb["ymax"]) + buffer_deg)
+}
+
+
+#' Core bubble map function
+#'
+#' SIZE   = ES value (winsorised per panel, free scale across facets)
+#' COLOUR = log10(polygon_area_km2) — constant across all panels
+#'
+#' @param long_sf     long-form sf with columns: value, es_label,
+#'                    polygon_area_km2, geometry
+#' @param stat_label  axis / legend title string
+#' @param ds_label    dataset display name for subtitle
+make_bubble_map <- function(long_sf, stat_label, ds_label) {
+
+  # winsorise size variable per panel so one huge outlier
+  # doesn't miniaturise every other point
+  long_sf <- long_sf |>
+    group_by(es_label) |>
+    mutate(value_w = winsorise(value)) |>
+    ungroup() |>
+    filter(!is.na(value_w), !is.na(polygon_area_km2))
+
+  world_crop <- basemap_crop(long_sf)
+
+  # shared colour limits across all panels (log scale)
+  area_log     <- log10(long_sf$polygon_area_km2 + 1e-3)
+  area_log_lim <- quantile(area_log, c(0.01, 0.99), na.rm = TRUE)
+
+  ggplot() +
+
+    # ── country basemap ───────────────────────────────────────────────────────
+    geom_sf(data = world_crop,
+            fill = COUNTRY_FILL, colour = COUNTRY_BORDER,
+            linewidth = 0.25) +
+
+    # ── bubbles: size = ES value, colour = polygon area ───────────────────────
+    geom_sf(data  = long_sf |> arrange(value_w),   # plot small bubbles last
+            aes(size   = value_w,
+                colour = log10(polygon_area_km2 + 1e-3)),
+            alpha  = POINT_ALPHA,
+            shape  = 16) +
+
+    # ── size scale: free per facet via after_scale isn't possible in facet_wrap
+    #    so we use scale_size_area (area ∝ value — perceptually correct)
+    scale_size_area(
+      name     = stat_label,
+      max_size = MAX_BUBBLE,
+      labels   = label_number(big.mark = ",", accuracy = 0.1),
+      guide    = guide_legend(
+        title.position = "top",
+        title.hjust    = 0.5,
+        override.aes   = list(alpha = 0.9, colour = "grey40"),
+        nrow           = 1
+      )
+    ) +
+
+    # ── colour scale: polygon area (log₁₀ km²) ───────────────────────────────
+    scale_colour_distiller(
+      palette   = AREA_PALETTE,
+      direction = AREA_PALETTE_D,
+      limits    = area_log_lim,
+      oob       = squish,
+      name      = "Mine area (km²)",
+      breaks    = log10(c(0.01, 0.1, 1, 10, 100, 1000)),
+      labels    = c("0.01", "0.1", "1", "10", "100", "1 000"),
+      guide     = guide_colourbar(
+        title.position  = "top",
+        title.hjust     = 0.5,
+        barwidth        = unit(5, "cm"),
+        barheight       = unit(0.4, "cm"),
+        ticks.linewidth = 0.5
+      )
+    ) +
+
+    # ── free size scale per panel (same geographic extent) ───────────────────
+    facet_wrap(~ es_label, ncol = 2) + # , scales = "free"
+
+    # ── cartographic annotations ──────────────────────────────────────────────
+    annotation_scale(location    = "bl", width_hint = 0.22,
+                     text_cex    = 0.55, line_width = 0.4) +
+    annotation_north_arrow(location = "tr",
+                           style    = north_arrow_minimal(text_size = 6),
+                           height   = unit(0.55, "cm"),
+                           width    = unit(0.55, "cm")) +
+
+    coord_sf(expand = FALSE) +
+
+    labs(
+      title    = paste0(stat_label, " at Mining Sites"),
+      subtitle = paste0(
+        ds_label,
+        "  |  Bubble size = ", tolower(stat_label),
+        " (winsorised 2–98th pct per panel)",
+        "  |  Colour = mine polygon area"
+      ),
+      caption = "Basemap: Natural Earth  |  Area computed in equal-area projection  |  CRS: WGS84"
+    ) +
+
+    theme_bw(base_size = 11) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 13),
+      plot.subtitle    = element_text(colour = "grey35", size = 8.5),
+      plot.caption     = element_text(colour = "grey55", size = 7.5, hjust = 1),
+      strip.text       = element_text(face = "bold", size = 10),
+      strip.background = element_rect(fill = "#e8e8e8", colour = NA),
+      legend.position  = "bottom",
+      legend.box       = "horizontal",
+      legend.title     = element_text(size = 8.5, face = "bold"),
+      legend.text      = element_text(size = 7.5),
+      legend.spacing.x = unit(0.8, "cm"),
+      axis.text        = element_text(size = 6.5),
+      axis.title       = element_blank(),
+      panel.grid.major = element_line(colour = "#e4e4e4", linewidth = 0.25),
+      panel.spacing    = unit(0.5, "lines")
+    )
+}
+
+
+#' Stacked dashboard: mean (top) + adj-sum (bottom)
+make_dashboard <- function(long_mean, long_sum, ds_label) {
+
+  strip <- function(p)
+    p + theme(plot.title    = element_blank(),
+              plot.subtitle = element_blank(),
+              plot.caption  = element_blank())
+
+  strip(make_bubble_map(long_mean, "Mean ES Value",         ds_label)) /
+  strip(make_bubble_map(long_sum,  "Area-Adjusted ES Sum",  ds_label)) +
+    plot_annotation(
+      title    = paste0("Ecosystem Services Bubble Maps  –  ", ds_label),
+      subtitle = paste0(
+        "Top: Mean value per centroid  |  Bottom: Area-adjusted sum  |  ",
+        "Bubble size = ES value  |  Colour = mine area (km²)"
+      ),
+      caption  = "Basemap: Natural Earth  |  CRS: WGS84",
+      theme    = theme(
+        plot.title    = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(colour = "grey35", size = 9),
+        plot.caption  = element_text(colour = "grey55", size = 8, hjust = 1)
+      )
+    )
+}
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+message("\n", strrep("=", 65))
+message("SPATIAL BUBBLE MAPS – ES MEAN & ADJ-SUM")
+message("  SIZE = ES value  |  COLOUR = mine polygon area")
+message(strrep("=", 65), "\n")
+
+for (label in names(DATASETS)) {
+  message("── Dataset: ", label, " ──────────────────────────────────")
+
+  centroids <- tryCatch(
+    load_centroids(DATASETS[[label]], label),
+    error = function(e) { message("  ✗ ", e$message); NULL }
+  )
+  if (is.null(centroids)) next
+
+  ds_label  <- DS_LABELS[label]
+  long_mean <- pivot_stat(centroids, "_mean")
+  long_sum  <- pivot_stat(centroids, "_adj_sum")
+
+  # ── Fig A: mean bubble map ────────────────────────────────────────────────
+  message("  Plotting Fig A – Mean bubble map...")
+  p_a   <- make_bubble_map(long_mean, "Mean ES Value", ds_label)
+  out_a <- file.path(FIG_DIR, paste0("figA_bubble_mean_", label, ".png"))
+  ggsave(out_a, p_a, width = 13, height = 11, dpi = 300, bg = "white")
+  message("  ✓ Saved: ", basename(out_a))
+
+  # ── Fig B: adj-sum bubble map ──────────────────────────────────────────────
+  message("  Plotting Fig B – Adj-sum bubble map...")
+  p_b   <- make_bubble_map(long_sum, "Area-Adjusted ES Sum", ds_label)
+  out_b <- file.path(FIG_DIR, paste0("figB_bubble_adjsum_", label, ".png"))
+  ggsave(out_b, p_b, width = 13, height = 11, dpi = 300, bg = "white")
+  message("  ✓ Saved: ", basename(out_b))
+
+  # ── Fig C: stacked dashboard ──────────────────────────────────────────────
+  message("  Plotting Fig C – Combined dashboard...")
+  p_c   <- make_dashboard(long_mean, long_sum, ds_label)
+  out_c <- file.path(FIG_DIR, paste0("figC_bubble_dashboard_", label, ".png"))
+  ggsave(out_c, p_c, width = 13, height = 20, dpi = 300, bg = "white")
+  message("  ✓ Saved: ", basename(out_c))
+
+  message("")
+}
+```
+
