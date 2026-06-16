@@ -1,0 +1,134 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-06-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(readr)
+library(sf)
+library(dplyr)
+library(skimr)
+library(ggplot2)
+library(cowplot)
+```
+
+
+
+```{r load data}
+
+fm <- readxl::read_excel(path = './data/蒙古未来矿.xlsx')
+
+# names(fm)
+
+
+fm %>%
+  count(Status) %>%
+  ggplot(aes(x = reorder(Status, n), y = n, fill = Status)) +
+  geom_col(show.legend = FALSE) +
+  
+  geom_text(
+    aes(label = n),
+    vjust = -0.3,
+    size = 4) + 
+    
+  # geom_text(
+  #   aes(label = n),
+  #   hjust = -0.2,
+  #   size = 4
+  # ) +
+  # coord_flip() +
+  labs(
+    x = NULL,
+    y = "Count",
+    title = "Frequency by Status"
+  ) +
+  theme_minimal()
+
+```
+
+```{r mine area}
+
+fm_area <- fm %>%
+  group_by(Primary_Commodities, Status) %>%
+  summarise(
+    n_mines = n(),
+    total_area_ha = sum(Mine_Area_hectares, na.rm = TRUE),
+    mean_area_ha = mean(Mine_Area_hectares, na.rm = TRUE),
+    median_area_ha = median(Mine_Area_hectares, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    total_area_km2  = total_area_ha / 100,
+    mean_area_km2   = mean_area_ha / 100,
+    median_area_km2 = median_area_ha / 100
+  ) %>%
+  arrange(desc(median_area_km2))
+
+```
+
+
+```{r plot mine area}
+
+library(tidyr)
+
+fm_area_complete <- fm_area %>%
+  complete(
+    Primary_Commodities,
+    Status,
+    fill = list(
+      median_area_km2 = 0
+    )
+  )
+
+
+ggplot(
+  fm_area_complete,
+  aes(
+    x = reorder(Primary_Commodities, median_area_km2),
+    y = median_area_km2,
+    fill = Status
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.9),
+    width = 0.8
+  ) +
+  geom_text(
+    aes(
+      label = ifelse(median_area_km2 > 0, round(median_area_km2, 0),  "")
+      # label = scales::comma(round(median_area_km2, 0))
+    ),
+    position = position_dodge(width = 0.9),
+    hjust = -0.2,
+    size = 3
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    x = NULL,
+    y = expression("Median Mine Area (km"^2*")")
+  ) +
+  theme_bw()
+
+
+
+ggsave(
+  filename = "figures/mine_area_by_status.png",
+  plot = last_plot(),
+  width = 8,
+  height = 6,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+```
+
+
+
