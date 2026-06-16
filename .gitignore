@@ -1,3 +1,15 @@
+
+# The API keys are included in .env
+.env
+*.env
+
+# Data folders to ignore
+credentials
+data/*
+natural-capital-footprint-impact
+figures/Index/*
+
+
 # History files
 .Rhistory
 .Rapp.history
