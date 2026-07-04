@@ -117,7 +117,7 @@ ggplot(
   theme_bw()
 
 
-
+# save figure
 ggsave(
   filename = "figures/mine_area_by_status.png",
   plot = last_plot(),
